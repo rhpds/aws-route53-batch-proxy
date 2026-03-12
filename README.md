@@ -172,24 +172,34 @@ client.list_resource_record_sets(
 
 ## API Endpoints
 
+The proxy listens on two ports:
+
+**Port 8443 — External (exposed via Route, all requests require AWS auth):**
+
 | Endpoint | Method | Description |
 |---|---|---|
 | `POST /2013-04-01/hostedzone/{id}/rrset/` | POST | Queue DNS changes (returns `BATCH-*` ID) |
 | `GET /2013-04-01/change/{id}` | GET | Check change status |
+| `* /*` | * | Forward to Route53 |
+
+**Port 9090 — Internal (cluster-only, no Route, no auth):**
+
+| Endpoint | Method | Description |
+|---|---|---|
 | `GET /health` | GET | Liveness probe |
 | `GET /ready` | GET | Readiness probe (checks Redis) |
 | `GET /metrics` | GET | Prometheus metrics |
-| `GET /status` | GET | Queue depths per zone |
-| `* /*` | * | Forward to Route53 |
+| `GET /status` | GET | Queue depths per zone, flush leader status |
 
 ## Authentication
 
-The proxy validates the AWS access key from the SigV4 `Authorization` header.
-Clients must use the same `AWS_ACCESS_KEY_ID` configured on the proxy. The
-signature is not validated — the proxy re-signs requests to Route53 with its
-own credentials for passthrough operations.
+The proxy validates the AWS access key from the SigV4 `Authorization` header
+on all requests to port 8443. Clients must use the same `AWS_ACCESS_KEY_ID`
+configured on the proxy. The signature is not validated — the proxy re-signs
+requests to Route53 with its own credentials for passthrough operations.
 
-Health, ready, metrics, and status endpoints do not require authentication.
+Port 9090 (health, ready, metrics, status) has no authentication and is only
+accessible within the cluster via the ClusterIP Service.
 
 ## Metrics
 
@@ -216,10 +226,10 @@ pip install -r requirements.txt
 # Start Redis
 docker run -d --name redis -p 6379:6379 redis:7
 
-# Run the proxy
+# Run the proxy (starts both ports: 8443 external, 9090 internal)
 export AWS_ACCESS_KEY_ID=...
 export AWS_SECRET_ACCESS_KEY=...
-uvicorn src.app:app --host 0.0.0.0 --port 8443
+python3 -m src.server
 
 # Run tests
 python3 -m pytest tests/ -v
