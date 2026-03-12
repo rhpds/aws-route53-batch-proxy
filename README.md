@@ -1,8 +1,11 @@
 # AWS Route53 Batch Proxy
 
 Batching proxy that intercepts Route53 `ChangeResourceRecordSets` API calls,
-queues DNS changes per hosted zone in Redis, and flushes consolidated batches
-to stay under Route53's 5 req/s per-zone rate limit.
+queues DNS changes per hosted zone in Redis, deduplicates, and flushes
+consolidated batches to stay under Route53's 5 req/s per-zone rate limit.
+
+Read-only operations (`ListResourceRecordSets`, `GetHostedZone`, etc.) are
+forwarded to Route53 directly.
 
 ## Problem
 
@@ -13,175 +16,87 @@ rate limit, causing cascading failures and retry storms.
 ## How It Works
 
 ```
-Ansible Playbooks  →  Batch Proxy  →  AWS Route53
-(uri module)          (queue + dedup + batch)   (≤5 req/s/zone)
+Ansible / boto3 / AWS CLI  →  Batch Proxy  →  AWS Route53
+(endpoint_url override)       (queue + dedup + batch writes)
+                              (forward reads)
 ```
 
-1. Ansible sends standard Route53 XML via `ansible.builtin.uri` to the proxy
-2. Proxy validates the AWS access key from the SigV4 `Authorization` header
-3. `ChangeResourceRecordSets` calls are queued in Redis by hosted zone
-4. Flush worker deduplicates and sends batched changes every 2s (configurable)
-5. Proxy returns a synthetic `BATCH-*` change ID immediately — no waiting
-6. `GetChange` lookups map synthetic IDs to the real Route53 change ID after flush
+1. Point `endpoint_url` (or `AWS_ENDPOINT_URL_ROUTE53`) at the proxy
+2. Clients use standard AWS credentials and SDK calls — no code changes
+3. **Writes** (`ChangeResourceRecordSets`) are queued in Redis by hosted zone
+4. **Reads** (`ListResourceRecordSets`, `GetHostedZone`, etc.) are forwarded to Route53
+5. Flush worker deduplicates and sends batched writes every 2s (configurable)
+6. Proxy returns a synthetic `BATCH-*` change ID immediately
+7. `GetChange` maps synthetic IDs to the real Route53 change ID after flush
 
 ## Ansible Integration
 
-The proxy accepts standard Route53 XML requests, so any Ansible playbook can use
-it via `ansible.builtin.uri`. The key requirement is an `Authorization` header
-containing the same AWS access key configured on the proxy.
+The proxy is a drop-in replacement for the Route53 API. Use the standard
+`amazon.aws.route53` module — just add `endpoint_url` pointing at the proxy.
 
-### Required Variables
-
-```yaml
-# Proxy endpoint and auth
-route53_proxy_url: https://route53-proxy-dev.apps.example.com
-route53_aws_access_key_id: AKIA...
-route53_aws_region: us-east-1
-
-# Construct the auth header (proxy validates the access key only, not the signature)
-route53_auth_header: >-
-  AWS4-HMAC-SHA256
-  Credential={{ route53_aws_access_key_id }}/20260101/{{ route53_aws_region }}/route53/aws4_request,
-  SignedHeaders=host, Signature=proxy
-```
-
-### Create a Single A Record
+### Create a Record
 
 ```yaml
 - name: Create DNS A record
-  ansible.builtin.uri:
-    url: "{{ route53_proxy_url }}/2013-04-01/hostedzone/{{ hosted_zone_id }}/rrset/"
-    method: POST
-    headers:
-      Content-Type: application/xml
-      Authorization: "{{ route53_auth_header }}"
-    body: |
-      <?xml version="1.0" encoding="UTF-8"?>
-      <ChangeResourceRecordSetsRequest xmlns="https://route53.amazonaws.com/doc/2013-04-01/">
-        <ChangeBatch><Changes><Change>
-          <Action>UPSERT</Action>
-          <ResourceRecordSet>
-            <Name>bastion.{{ guid }}.{{ base_domain }}.</Name>
-            <Type>A</Type>
-            <TTL>300</TTL>
-            <ResourceRecords>
-              <ResourceRecord><Value>{{ bastion_ip }}</Value></ResourceRecord>
-            </ResourceRecords>
-          </ResourceRecordSet>
-        </Change></Changes></ChangeBatch>
-      </ChangeResourceRecordSetsRequest>
-    status_code: 200
+  amazon.aws.route53:
+    state: present
+    aws_access_key_id: "{{ route53_aws_access_key_id }}"
+    aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
+    endpoint_url: "{{ route53_proxy_url }}"
     validate_certs: false
+    hosted_zone_id: "{{ route53_aws_zone_id }}"
+    record: "bastion.{{ guid }}.{{ base_domain }}"
+    type: A
+    ttl: 300
+    value: "{{ bastion_ip }}"
+    overwrite: true
+```
+
+### Delete a Record
+
+```yaml
+- name: Delete DNS A record
+  amazon.aws.route53:
+    state: absent
+    aws_access_key_id: "{{ route53_aws_access_key_id }}"
+    aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
+    endpoint_url: "{{ route53_proxy_url }}"
+    validate_certs: false
+    hosted_zone_id: "{{ route53_aws_zone_id }}"
+    record: "bastion.{{ guid }}.{{ base_domain }}"
+    type: A
+    ttl: 300
+    value: "{{ bastion_ip }}"
+```
+
+### Loop Over Instances
+
+```yaml
+- name: Create DNS records for all instances
+  amazon.aws.route53:
+    state: present
+    aws_access_key_id: "{{ route53_aws_access_key_id }}"
+    aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
+    endpoint_url: "{{ route53_proxy_url }}"
+    validate_certs: false
+    hosted_zone_id: "{{ route53_aws_zone_id }}"
+    record: "{{ item.name }}.{{ guid }}.{{ base_domain }}"
+    type: A
+    ttl: 300
+    value: "{{ item.ip }}"
+    overwrite: true
+  loop: "{{ instances }}"
   retries: 3
   delay: 5
 ```
 
-### Delete a Single A Record
+### Migrating Existing Playbooks
 
-```yaml
-- name: Delete DNS A record
-  ansible.builtin.uri:
-    url: "{{ route53_proxy_url }}/2013-04-01/hostedzone/{{ hosted_zone_id }}/rrset/"
-    method: POST
-    headers:
-      Content-Type: application/xml
-      Authorization: "{{ route53_auth_header }}"
-    body: |
-      <?xml version="1.0" encoding="UTF-8"?>
-      <ChangeResourceRecordSetsRequest xmlns="https://route53.amazonaws.com/doc/2013-04-01/">
-        <ChangeBatch><Changes><Change>
-          <Action>DELETE</Action>
-          <ResourceRecordSet>
-            <Name>bastion.{{ guid }}.{{ base_domain }}.</Name>
-            <Type>A</Type>
-            <TTL>300</TTL>
-            <ResourceRecords>
-              <ResourceRecord><Value>{{ bastion_ip }}</Value></ResourceRecord>
-            </ResourceRecords>
-          </ResourceRecordSet>
-        </Change></Changes></ChangeBatch>
-      </ChangeResourceRecordSetsRequest>
-    status_code: 200
-    validate_certs: false
-```
-
-### Batch Multiple Records in One Request
-
-Send all records for a lab environment in a single request. The proxy queues
-them together and the flusher sends them as one Route53 API call.
-
-```yaml
-- name: Batch create all DNS records for environment
-  ansible.builtin.uri:
-    url: "{{ route53_proxy_url }}/2013-04-01/hostedzone/{{ hosted_zone_id }}/rrset/"
-    method: POST
-    headers:
-      Content-Type: application/xml
-      Authorization: "{{ route53_auth_header }}"
-    body: |
-      <?xml version="1.0" encoding="UTF-8"?>
-      <ChangeResourceRecordSetsRequest xmlns="https://route53.amazonaws.com/doc/2013-04-01/">
-        <ChangeBatch><Changes>
-      {% for instance in instances %}
-          <Change>
-            <Action>UPSERT</Action>
-            <ResourceRecordSet>
-              <Name>{{ instance.name }}.{{ guid }}.{{ base_domain }}.</Name>
-              <Type>A</Type>
-              <TTL>300</TTL>
-              <ResourceRecords>
-                <ResourceRecord><Value>{{ instance.ip }}</Value></ResourceRecord>
-              </ResourceRecords>
-            </ResourceRecordSet>
-          </Change>
-      {% endfor %}
-          <Change>
-            <Action>UPSERT</Action>
-            <ResourceRecordSet>
-              <Name>*.apps.{{ guid }}.{{ base_domain }}.</Name>
-              <Type>CNAME</Type>
-              <TTL>300</TTL>
-              <ResourceRecords>
-                <ResourceRecord><Value>master.{{ guid }}.{{ base_domain }}.</Value></ResourceRecord>
-              </ResourceRecords>
-            </ResourceRecordSet>
-          </Change>
-        </Changes></ChangeBatch>
-      </ChangeResourceRecordSetsRequest>
-    status_code: 200
-    validate_certs: false
-    return_content: true
-  register: batch_result
-```
-
-### Check Change Status
-
-The proxy returns a `BATCH-*` change ID immediately. After the flusher sends
-the batch to Route53, `GetChange` maps the synthetic ID to the real one.
-
-```yaml
-- name: Extract change ID
-  ansible.builtin.set_fact:
-    change_id: "{{ batch_result.content | regex_search('BATCH-[a-f0-9]+') | default('') }}"
-
-- name: Check change status
-  ansible.builtin.uri:
-    url: "{{ route53_proxy_url }}/2013-04-01/change/{{ change_id }}"
-    method: GET
-    headers:
-      Authorization: "{{ route53_auth_header }}"
-    validate_certs: false
-  when: change_id | length > 0
-```
-
-### Migrating from `amazon.aws.route53`
-
-If your playbook currently uses the `amazon.aws.route53` module:
+Add `endpoint_url` and `validate_certs: false`. Everything else stays the same.
 
 **Before (direct Route53):**
 ```yaml
-- name: DNS entry
-  amazon.aws.route53:
+- amazon.aws.route53:
     state: present
     aws_access_key_id: "{{ route53_aws_access_key_id }}"
     aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
@@ -195,63 +110,84 @@ If your playbook currently uses the `amazon.aws.route53` module:
 
 **After (via proxy):**
 ```yaml
-- name: DNS entry
-  ansible.builtin.uri:
-    url: "{{ route53_proxy_url }}/2013-04-01/hostedzone/{{ route53_aws_zone_id }}/rrset/"
-    method: POST
-    headers:
-      Content-Type: application/xml
-      Authorization: "{{ route53_auth_header }}"
-    body: |
-      <?xml version="1.0" encoding="UTF-8"?>
-      <ChangeResourceRecordSetsRequest xmlns="https://route53.amazonaws.com/doc/2013-04-01/">
-        <ChangeBatch><Changes><Change>
-          <Action>UPSERT</Action>
-          <ResourceRecordSet>
-            <Name>{{ instance_name }}.{{ base_domain }}.</Name>
-            <Type>A</Type>
-            <TTL>300</TTL>
-            <ResourceRecords>
-              <ResourceRecord><Value>{{ instance_ip }}</Value></ResourceRecord>
-            </ResourceRecords>
-          </ResourceRecordSet>
-        </Change></Changes></ChangeBatch>
-      </ChangeResourceRecordSetsRequest>
-    status_code: 200
-    validate_certs: false
-  retries: 3
+- amazon.aws.route53:
+    state: present
+    aws_access_key_id: "{{ route53_aws_access_key_id }}"
+    aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
+    endpoint_url: "{{ route53_proxy_url }}"          # ← add this
+    validate_certs: false                             # ← add this
+    hosted_zone_id: "{{ route53_aws_zone_id }}"
+    record: "{{ instance_name }}.{{ base_domain }}"
+    value: "{{ instance_ip }}"
+    type: A
+  retries: 3                                          # ← fewer retries needed
   delay: 5
 ```
 
-Key differences:
-- Replace `amazon.aws.route53` with `ansible.builtin.uri` (no collection dependency)
-- Add `Authorization` header with the AWS access key
-- Body is standard Route53 XML (same format the AWS SDK sends)
-- Fewer retries needed — the proxy handles batching and rate limiting
-- Trailing dot on DNS names (e.g., `example.com.`) — required by Route53 XML API
-- `state: present` maps to `<Action>UPSERT</Action>`
-- `state: absent` maps to `<Action>DELETE</Action>`
+### Using with the AWS CLI
+
+```bash
+# Set the endpoint override
+export AWS_ENDPOINT_URL_ROUTE53=https://route53-proxy-dev.apps.example.com
+
+# Use the CLI normally — writes are batched, reads are forwarded
+aws route53 change-resource-record-sets \
+  --hosted-zone-id Z009829317DQYBBJZ02ZU \
+  --change-batch file://changes.json
+
+aws route53 list-resource-record-sets \
+  --hosted-zone-id Z009829317DQYBBJZ02ZU
+```
+
+### Using with boto3
+
+```python
+import boto3
+
+client = boto3.client(
+    "route53",
+    endpoint_url="https://route53-proxy-dev.apps.example.com",
+    verify=False,
+)
+
+# This write is batched through the proxy
+client.change_resource_record_sets(
+    HostedZoneId="Z009829317DQYBBJZ02ZU",
+    ChangeBatch={"Changes": [...]},
+)
+
+# This read is forwarded to Route53 directly
+client.list_resource_record_sets(
+    HostedZoneId="Z009829317DQYBBJZ02ZU",
+)
+```
+
+## What Gets Batched
+
+| Operation | Behavior |
+|---|---|
+| `ChangeResourceRecordSets` | **Batched** — queued in Redis, deduped, flushed every 2s |
+| `GetChange` | Handled locally — maps `BATCH-*` IDs to real change IDs |
+| Everything else | **Forwarded** to Route53 with re-signed SigV4 credentials |
 
 ## API Endpoints
 
 | Endpoint | Method | Description |
 |---|---|---|
 | `POST /2013-04-01/hostedzone/{id}/rrset/` | POST | Queue DNS changes (returns `BATCH-*` ID) |
-| `GET /2013-04-01/change/{id}` | GET | Check change status (maps synthetic → real ID) |
-| `GET /health` | GET | Liveness probe (`{"status": "ok"}`) |
-| `GET /ready` | GET | Readiness probe — checks Redis connectivity |
+| `GET /2013-04-01/change/{id}` | GET | Check change status |
+| `GET /health` | GET | Liveness probe |
+| `GET /ready` | GET | Readiness probe (checks Redis) |
 | `GET /metrics` | GET | Prometheus metrics |
-| `GET /status` | GET | Queue depths per zone, flush leader status |
+| `GET /status` | GET | Queue depths per zone |
+| `* /*` | * | Forward to Route53 |
 
 ## Authentication
 
-The proxy validates the AWS access key from the `Authorization` header on every
-proxied request. Clients must use the same `AWS_ACCESS_KEY_ID` configured on the
-proxy. The signature itself is not validated — only the access key is checked.
-
-Unauthenticated requests receive a Route53-style `403` XML error:
-- Missing header: `MissingAuthenticationToken`
-- Wrong key: `InvalidClientTokenId`
+The proxy validates the AWS access key from the SigV4 `Authorization` header.
+Clients must use the same `AWS_ACCESS_KEY_ID` configured on the proxy. The
+signature is not validated — the proxy re-signs requests to Route53 with its
+own credentials for passthrough operations.
 
 Health, ready, metrics, and status endpoints do not require authentication.
 
@@ -312,10 +248,6 @@ ansible-playbook ansible/deploy.yml -e env=dev
 
 # Apply manifests only (no build wait)
 ansible-playbook ansible/deploy.yml -e env=dev --tags apply
-
-# Test with the test playbook
-ansible-playbook ansible/test-dns.yml -e env=dev \
-  -e guid=mytest -e hosted_zone_id=Z009829317DQYBBJZ02ZU --tags batch
 ```
 
 Pushes to `main` auto-trigger OpenShift builds via GitHub webhook.
