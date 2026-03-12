@@ -19,14 +19,16 @@ calls, queuing them in Redis, and flushing consolidated batches every 2 seconds.
 
 ## Strategy
 
-- Add `endpoint_url: "{{ route53_endpoint_url | default(omit) }}"` to every
-  `amazon.aws.route53` module call in the affected roles.
+- Add `endpoint_url: "{{ route53_endpoint_url | default(omit) }}"` to the
+  `amazon.aws.route53` module calls in destroy-related roles.
 - Set a default value for `route53_endpoint_url` in the `openshift_cnv` cloud
   provider destroy playbook so all CNV destroys use the proxy automatically.
-- Individual catalog items can override (or disable with `""`) via AgnosticV vars.
+- Individual catalog items can override (or disable) via AgnosticV vars.
 
-Using `default(omit)` means any non-CNV playbook that doesn't define the variable
+Using `default(omit)` means any playbook that doesn't define the variable
 is completely unaffected — the parameter is simply absent from the module call.
+
+For provision-side (create) changes, see [agnosticd-integration-provision.md](agnosticd-integration-provision.md).
 
 ---
 
@@ -66,34 +68,9 @@ play-level var:
 
 ### 2. `ansible/roles/infra_dns/tasks/nested_loop.yml`
 
-Add `endpoint_url` to all four `amazon.aws.route53` calls.
+Add `endpoint_url` to the two `state: absent` `amazon.aws.route53` calls.
 
-**Lines 19-27** (create — present, main record):
-```yaml
-  - name: DNS entry ({{ _dns_state | default('present') }})
-    amazon.aws.route53:
-      state: present
-      endpoint_url: "{{ route53_endpoint_url | default(omit) }}"
-      aws_access_key_id: "{{ route53_aws_access_key_id }}"
-      aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
-      hosted_zone_id: "{{ route53_aws_zone_id }}"
-      record: "{{ _instance_name }}.{{ guid }}.{{ cluster_dns_zone }}"
-      zone: "{{ cluster_dns_zone }}"
-      value: "{{ vars[infra_dns_inventory_var] | json_query(find_ip_query) }}"
-      type: A
-```
-
-**Lines 39-47** (create — present, alt records):
-```yaml
-  - name: DNS alternative entry ({{ _dns_state | default('present') }})
-    amazon.aws.route53:
-      state: present
-      endpoint_url: "{{ route53_endpoint_url | default(omit) }}"
-      aws_access_key_id: "{{ route53_aws_access_key_id }}"
-      ...
-```
-
-**Lines 61-68** (delete — absent, main record):
+**Lines 61-68** (delete — main record):
 ```yaml
   - name: DNS entry ({{ _dns_state | default('present') }})
     amazon.aws.route53:
@@ -107,14 +84,18 @@ Add `endpoint_url` to all four `amazon.aws.route53` calls.
       type: A
 ```
 
-**Lines 75-82** (delete — absent, alt records):
+**Lines 75-82** (delete — alt records):
 ```yaml
   - name: DNS alternative entry ({{ _dns_state | default('present') }})
     amazon.aws.route53:
       state: absent
       endpoint_url: "{{ route53_endpoint_url | default(omit) }}"
       aws_access_key_id: "{{ route53_aws_access_key_id }}"
-      ...
+      aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
+      hosted_zone_id: "{{ route53_aws_zone_id }}"
+      record: "{{ _alt_name }}{{ _index }}.{{ guid }}.{{ cluster_dns_zone }}"
+      zone: "{{ cluster_dns_zone }}"
+      type: A
 ```
 
 ### 3. `ansible/roles/host_ocp4_assisted_destroy/tasks/main.yaml`
@@ -138,21 +119,6 @@ Add `endpoint_url` to the route53 call at **line 52**:
     - "api"
     - "*.apps"
 ```
-
-### 4. Provision-side roles (optional, for consistency)
-
-These roles create DNS records during provisioning. Adding `endpoint_url` here
-is optional — the throttling problem is primarily during mass destroys — but
-doing so gives full proxy coverage if desired.
-
-- `ansible/roles/host_ocp4_assisted_installer/tasks/configure_sno_compact_cluster.yml`
-  — 3 calls at lines 32, 48, 64
-- `ansible/roles/host_ocp4_assisted_installer/tasks/configure_full_cluster.yml`
-  — 2 calls at lines 22, 57
-- `ansible/roles/host-ocp4-hcp-cnv-install/tasks/main.yaml`
-  — 1 call at line 295
-
-Same pattern: add `endpoint_url: "{{ route53_endpoint_url | default(omit) }}"`.
 
 ---
 
@@ -189,11 +155,9 @@ Add `route53_endpoint_url` as a play-level var (same as v2 above):
 
 ### 2. `ansible/roles-infra/infra-dns/tasks/nested_loop.yml`
 
-Add `endpoint_url: "{{ route53_endpoint_url | default(omit) }}"` to all four
-`amazon.aws.route53` calls:
+Add `endpoint_url: "{{ route53_endpoint_url | default(omit) }}"` to the two
+`state: absent` `amazon.aws.route53` calls:
 
-- **Line 79** — present, main record
-- **Line 102** — present, alt records
 - **Line 164** — absent, main record
 - **Line 182** — absent, alt records
 
@@ -235,23 +199,16 @@ benefit from the proxy when they eventually destroy:
 | `enterprise` | `aap-product-demos-cnv-aap25` |
 | `openshift-cnv` | `ocp-virt-roadshow-multi-user` |
 
-### AgnosticV Override (optional)
+### AgnosticV Override
 
 Any catalog item can disable the proxy by setting in its AgnosticV vars:
-
-```yaml
-route53_endpoint_url: ""
-```
-
-This overrides the default set in the cloud provider destroy playbook and causes
-`default(omit)` to pass an empty string, which the module treats as "use default
-AWS endpoint". Alternatively, to be explicit:
 
 ```yaml
 route53_endpoint_url: ~
 ```
 
-YAML null (`~`) will cause `default(omit)` to omit the parameter entirely.
+YAML null (`~`) will cause `default(omit)` to omit the parameter entirely,
+falling back to direct AWS Route53 calls.
 
 ---
 
