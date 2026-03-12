@@ -3,7 +3,7 @@
 The throttling problem is primarily during mass destroys, but the proxy can also
 be used during provisioning for full coverage. This is optional and lower
 priority than the destroy-side changes documented in
-[agnosticd-integration.md](agnosticd-integration.md).
+[agnosticd-integration-destroy.md](agnosticd-integration-destroy.md).
 
 ## Changes Required in agnosticd-v2
 
