@@ -39,31 +39,31 @@ For provision-side (create) changes, see [agnosticd-integration-provision.md](ag
 Set the default proxy URL for all CNV destroys. Add `route53_endpoint_url` as a
 play-level var:
 
-```yaml
----
-- name: Include Variables
-  ansible.builtin.import_playbook: ../../include_vars.yml
+```diff
+ ---
+ - name: Include Variables
+   ansible.builtin.import_playbook: ../../include_vars.yml
 
-- name: Delete Infrastructure
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  become: false
-  vars:
-    route53_endpoint_url: "https://route53-proxy.apps.ocpv-infra01.dal12.infra.demo.redhat.com"
-  tasks:
-  - name: Run resources role
-    vars:
-      ACTION: destroy
-    ansible.builtin.include_role:
-      name: agnosticd.cloud_provider_openshift_cnv.resources
+ - name: Delete Infrastructure
+   hosts: localhost
+   connection: local
+   gather_facts: false
+   become: false
++  vars:
++    route53_endpoint_url: "https://route53-proxy.apps.ocpv-infra01.dal12.infra.demo.redhat.com"
+   tasks:
+   - name: Run resources role
+     vars:
+       ACTION: destroy
+     ansible.builtin.include_role:
+       name: agnosticd.cloud_provider_openshift_cnv.resources
 
-  - name: Run infra_dns role
-    when: cluster_dns_server is defined or route53_aws_zone_id is defined
-    vars:
-      _dns_state: absent
-    ansible.builtin.include_role:
-      name: infra_dns
+   - name: Run infra_dns role
+     when: cluster_dns_server is defined or route53_aws_zone_id is defined
+     vars:
+       _dns_state: absent
+     ansible.builtin.include_role:
+       name: infra_dns
 ```
 
 ### 2. `ansible/roles/infra_dns/tasks/nested_loop.yml`
@@ -71,53 +71,53 @@ play-level var:
 Add `endpoint_url` to the two `state: absent` `amazon.aws.route53` calls.
 
 **Lines 61-68** (delete — main record):
-```yaml
-  - name: DNS entry ({{ _dns_state | default('present') }})
-    amazon.aws.route53:
-      state: absent
-      endpoint_url: "{{ route53_endpoint_url | default(omit) }}"
-      aws_access_key_id: "{{ route53_aws_access_key_id }}"
-      aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
-      hosted_zone_id: "{{ route53_aws_zone_id }}"
-      record: "{{ _instance_name }}.{{ guid }}.{{ cluster_dns_zone }}"
-      zone: "{{ cluster_dns_zone }}"
-      type: A
+```diff
+   - name: DNS entry ({{ _dns_state | default('present') }})
+     amazon.aws.route53:
+       state: absent
++      endpoint_url: "{{ route53_endpoint_url | default(omit) }}"
+       aws_access_key_id: "{{ route53_aws_access_key_id }}"
+       aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
+       hosted_zone_id: "{{ route53_aws_zone_id }}"
+       record: "{{ _instance_name }}.{{ guid }}.{{ cluster_dns_zone }}"
+       zone: "{{ cluster_dns_zone }}"
+       type: A
 ```
 
 **Lines 75-82** (delete — alt records):
-```yaml
-  - name: DNS alternative entry ({{ _dns_state | default('present') }})
-    amazon.aws.route53:
-      state: absent
-      endpoint_url: "{{ route53_endpoint_url | default(omit) }}"
-      aws_access_key_id: "{{ route53_aws_access_key_id }}"
-      aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
-      hosted_zone_id: "{{ route53_aws_zone_id }}"
-      record: "{{ _alt_name }}{{ _index }}.{{ guid }}.{{ cluster_dns_zone }}"
-      zone: "{{ cluster_dns_zone }}"
-      type: A
+```diff
+   - name: DNS alternative entry ({{ _dns_state | default('present') }})
+     amazon.aws.route53:
+       state: absent
++      endpoint_url: "{{ route53_endpoint_url | default(omit) }}"
+       aws_access_key_id: "{{ route53_aws_access_key_id }}"
+       aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
+       hosted_zone_id: "{{ route53_aws_zone_id }}"
+       record: "{{ _alt_name }}{{ _index }}.{{ guid }}.{{ cluster_dns_zone }}"
+       zone: "{{ cluster_dns_zone }}"
+       type: A
 ```
 
 ### 3. `ansible/roles/host_ocp4_assisted_destroy/tasks/main.yaml`
 
 Add `endpoint_url` to the route53 call at **line 52**:
 
-```yaml
-  - name: Delete DNS records (Route53)
-    when: route53_aws_access_key_id is defined
-    amazon.aws.route53:
-      state: absent
-      endpoint_url: "{{ route53_endpoint_url | default(omit) }}"
-      aws_access_key_id: "{{ route53_aws_access_key_id }}"
-      aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
-      hosted_zone_id: "{{ route53_aws_zone_id }}"
-      record: "{{ item }}.{{ cluster_name }}.{{ cluster_dns_zone }}"
-      zone: "{{ cluster_dns_zone  }}"
-      type: A
-    loop:
-    - "api-int"
-    - "api"
-    - "*.apps"
+```diff
+   - name: Delete DNS records (Route53)
+     when: route53_aws_access_key_id is defined
+     amazon.aws.route53:
+       state: absent
++      endpoint_url: "{{ route53_endpoint_url | default(omit) }}"
+       aws_access_key_id: "{{ route53_aws_access_key_id }}"
+       aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
+       hosted_zone_id: "{{ route53_aws_zone_id }}"
+       record: "{{ item }}.{{ cluster_name }}.{{ cluster_dns_zone }}"
+       zone: "{{ cluster_dns_zone  }}"
+       type: A
+     loop:
+     - "api-int"
+     - "api"
+     - "*.apps"
 ```
 
 ---
@@ -130,27 +130,27 @@ The v1 repo has the same pattern with slightly different paths and role naming.
 
 Add `route53_endpoint_url` as a play-level var (same as v2 above):
 
-```yaml
-- name: Delete Infrastructure
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  become: false
-  vars:
-    route53_endpoint_url: "https://route53-proxy.apps.ocpv-infra01.dal12.infra.demo.redhat.com"
-  tasks:
-    - name: Run infra-openshift-cnv-resources
-      ansible.builtin.include_role:
-        name: infra-openshift-cnv-resources
-      vars:
-        ACTION: destroy
+```diff
+ - name: Delete Infrastructure
+   hosts: localhost
+   connection: local
+   gather_facts: false
+   become: false
++  vars:
++    route53_endpoint_url: "https://route53-proxy.apps.ocpv-infra01.dal12.infra.demo.redhat.com"
+   tasks:
+     - name: Run infra-openshift-cnv-resources
+       ansible.builtin.include_role:
+         name: infra-openshift-cnv-resources
+       vars:
+         ACTION: destroy
 
-    - name: Run infra-dns Role
-      when: cluster_dns_server is defined or route53_aws_zone_id is defined
-      ansible.builtin.include_role:
-        name: infra-dns
-      vars:
-        _dns_state: absent
+     - name: Run infra-dns Role
+       when: cluster_dns_server is defined or route53_aws_zone_id is defined
+       ansible.builtin.include_role:
+         name: infra-dns
+       vars:
+         _dns_state: absent
 ```
 
 ### 2. `ansible/roles-infra/infra-dns/tasks/nested_loop.yml`
@@ -158,55 +158,55 @@ Add `route53_endpoint_url` as a play-level var (same as v2 above):
 Add `endpoint_url` to the two `state: absent` `amazon.aws.route53` calls.
 
 **Line 164** (delete — main record):
-```yaml
-        - name: DNS entry ({{ _dns_state | default('present') }})
-          when: route53_aws_zone_id is defined
-          amazon.aws.route53:
-            state: absent
-            endpoint_url: "{{ route53_endpoint_url | default(omit) }}"
-            aws_access_key_id: "{{ route53_aws_access_key_id }}"
-            aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
-            hosted_zone_id: "{{ route53_aws_zone_id }}"
-            record: "{{ _instance_name }}.{{ base_domain }}"
-            type: A
+```diff
+         - name: DNS entry ({{ _dns_state | default('present') }})
+           when: route53_aws_zone_id is defined
+           amazon.aws.route53:
+             state: absent
++            endpoint_url: "{{ route53_endpoint_url | default(omit) }}"
+             aws_access_key_id: "{{ route53_aws_access_key_id }}"
+             aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
+             hosted_zone_id: "{{ route53_aws_zone_id }}"
+             record: "{{ _instance_name }}.{{ base_domain }}"
+             type: A
 ```
 
 **Line 182** (delete — alt records):
-```yaml
-        - name: DNS alternative entry ({{ _dns_state | default('present') }})
-          when: route53_aws_zone_id is defined and _alt_names | length > 0
-          loop: "{{ _alt_names }}"
-          loop_control:
-            loop_var: _alt_name
-          amazon.aws.route53:
-            state: absent
-            endpoint_url: "{{ route53_endpoint_url | default(omit) }}"
-            aws_access_key_id: "{{ route53_aws_access_key_id }}"
-            aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
-            hosted_zone_id: "{{ route53_aws_zone_id }}"
-            record: "{{ _alt_name }}{{_index}}.{{ base_domain }}"
-            type: A
+```diff
+         - name: DNS alternative entry ({{ _dns_state | default('present') }})
+           when: route53_aws_zone_id is defined and _alt_names | length > 0
+           loop: "{{ _alt_names }}"
+           loop_control:
+             loop_var: _alt_name
+           amazon.aws.route53:
+             state: absent
++            endpoint_url: "{{ route53_endpoint_url | default(omit) }}"
+             aws_access_key_id: "{{ route53_aws_access_key_id }}"
+             aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
+             hosted_zone_id: "{{ route53_aws_zone_id }}"
+             record: "{{ _alt_name }}{{_index}}.{{ base_domain }}"
+             type: A
 ```
 
 ### 3. `ansible/roles/host-ocp4-assisted-destroy/tasks/main.yaml`
 
 Add `endpoint_url` to the route53 call at **line 52**:
 
-```yaml
-    - name: Delete dns records
-      when: route53_aws_zone_id is defined
-      amazon.aws.route53:
-        state: absent
-        endpoint_url: "{{ route53_endpoint_url | default(omit) }}"
-        aws_access_key_id: "{{ route53_aws_access_key_id }}"
-        aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
-        hosted_zone_id: "{{ route53_aws_zone_id }}"
-        record: "{{ item }}.{{ cluster_name }}.{{ cluster_dns_zone }}"
-        zone: "{{ cluster_dns_zone  }}"
-        type: A
-      loop:
-        - "api"
-        - "*.apps"
+```diff
+     - name: Delete dns records
+       when: route53_aws_zone_id is defined
+       amazon.aws.route53:
+         state: absent
++        endpoint_url: "{{ route53_endpoint_url | default(omit) }}"
+         aws_access_key_id: "{{ route53_aws_access_key_id }}"
+         aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
+         hosted_zone_id: "{{ route53_aws_zone_id }}"
+         record: "{{ item }}.{{ cluster_name }}.{{ cluster_dns_zone }}"
+         zone: "{{ cluster_dns_zone  }}"
+         type: A
+       loop:
+         - "api"
+         - "*.apps"
 ```
 
 ---
