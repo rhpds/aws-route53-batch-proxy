@@ -1,0 +1,22 @@
+---
+- name: Wait for app build to complete
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig }}"
+    api_version: build.openshift.io/v1
+    kind: Build
+    namespace: "{{ target_namespace }}"
+    label_selectors:
+      - buildconfig=route53-batch-proxy
+  register: build_info
+  until: >-
+    build_info.resources | length > 0 and
+    build_info.resources | map(attribute='status.phase') | list | last in ['Complete', 'Failed']
+  retries: 60
+  delay: 5
+
+- name: Report build status
+  ansible.builtin.debug:
+    msg: >-
+      Build {{ build_info.resources[-1].metadata.name }}:
+      {{ build_info.resources[-1].status.phase }}
+  when: build_info.resources | length > 0

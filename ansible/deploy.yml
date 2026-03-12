@@ -1,0 +1,101 @@
+---
+# Route53 Batch Proxy — OCP Deployment Playbook
+#
+# Usage:
+#   ansible-playbook ansible/deploy.yml -e env=dev                # Full deploy
+#   ansible-playbook ansible/deploy.yml -e env=dev --tags apply   # Just apply manifests
+#   ansible-playbook ansible/deploy.yml -e env=dev --tags builds  # Wait for builds + rollout
+
+- name: Deploy Route53 Batch Proxy to OpenShift
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  collections:
+    - kubernetes.core
+
+  vars_files:
+    - "vars/{{ env }}.yml"
+
+  pre_tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - env is defined
+          - target_namespace is defined
+          - kubeconfig is defined
+          - aws_access_key_id is defined
+          - aws_secret_access_key is defined
+        fail_msg: >
+          Missing required variables. Create ansible/vars/{{ env | default('dev') }}.yml
+          from the corresponding .example file.
+
+    - name: Verify kubeconfig exists
+      ansible.builtin.stat:
+        path: "{{ kubeconfig }}"
+      register: kubeconfig_file
+
+    - name: Fail if kubeconfig not found
+      ansible.builtin.fail:
+        msg: "Kubeconfig not found at {{ kubeconfig }}"
+      when: not kubeconfig_file.stat.exists
+
+    - name: Verify cluster connectivity
+      kubernetes.core.k8s_cluster_info:
+        kubeconfig: "{{ kubeconfig }}"
+      register: cluster_info
+
+  tasks:
+    - name: Create namespace
+      ansible.builtin.include_tasks:
+        file: tasks/namespace.yml
+        apply:
+          tags: [namespace, apply]
+      tags: [namespace, apply]
+
+    - name: Configure pull secret
+      ansible.builtin.include_tasks:
+        file: tasks/pull-secret.yml
+        apply:
+          tags: [namespace, apply]
+      tags: [namespace, apply]
+
+    - name: Apply manifests
+      ansible.builtin.include_tasks:
+        file: tasks/apply-manifests.yml
+        apply:
+          tags: [apply]
+      tags: [apply]
+
+    - name: Wait for builds
+      ansible.builtin.include_tasks:
+        file: tasks/wait-for-builds.yml
+        apply:
+          tags: [builds, apply]
+      tags: [builds, apply]
+
+  post_tasks:
+    - name: Get pod status
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig }}"
+        kind: Pod
+        namespace: "{{ target_namespace }}"
+        label_selectors:
+          - app=route53-batch-proxy
+      register: final_pods
+      tags: [always]
+
+    - name: Deployment summary
+      ansible.builtin.debug:
+        msg: |
+          === Route53 Batch Proxy {{ env }} deployment complete ===
+
+          Namespace: {{ target_namespace }}
+          Proxy:     https://{{ proxy_host }}
+          Health:    https://{{ proxy_host }}/health
+          Metrics:   https://{{ proxy_host }}/metrics
+
+          Pods:
+          {% for pod in final_pods.resources | sort(attribute='metadata.name') %}
+            {{ pod.metadata.name }}  {{ pod.status.phase }}
+          {% endfor %}
+      tags: [always]

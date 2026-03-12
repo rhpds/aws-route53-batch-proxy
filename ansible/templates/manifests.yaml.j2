@@ -1,0 +1,191 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: route53-batch-proxy
+  labels:
+    app: route53-batch-proxy
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: "{{ aws_access_key_id }}"
+  AWS_SECRET_ACCESS_KEY: "{{ aws_secret_access_key }}"
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: route53-batch-proxy
+  labels:
+    app: route53-batch-proxy
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: route53-batch-proxy
+  labels:
+    app: route53-batch-proxy
+spec:
+  source:
+    type: Git
+    git:
+      uri: "{{ git_repo_url }}"
+      ref: "{{ git_ref | default('main') }}"
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Containerfile
+  output:
+    to:
+      kind: ImageStreamTag
+      name: route53-batch-proxy:latest
+  triggers:
+    - type: ConfigChange
+    - type: GitHub
+      github:
+        secret: "{{ webhook_secret }}"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  labels:
+    app: route53-batch-proxy
+    component: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      component: redis
+  template:
+    metadata:
+      labels:
+        app: route53-batch-proxy
+        component: redis
+    spec:
+      containers:
+        - name: redis
+          image: registry.redhat.io/rhel9/redis-7:latest
+          ports:
+            - containerPort: 6379
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  labels:
+    app: route53-batch-proxy
+    component: redis
+spec:
+  selector:
+    component: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: route53-batch-proxy
+  labels:
+    app: route53-batch-proxy
+    component: proxy
+  annotations:
+    image.openshift.io/triggers: >-
+      [{"from":{"kind":"ImageStreamTag","name":"route53-batch-proxy:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"proxy\")].image"}]
+spec:
+  replicas: {{ proxy_replicas | default(1) }}
+  selector:
+    matchLabels:
+      component: proxy
+  template:
+    metadata:
+      labels:
+        app: route53-batch-proxy
+        component: proxy
+    spec:
+      containers:
+        - name: proxy
+          image: " "
+          ports:
+            - containerPort: 8443
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: route53-batch-proxy
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: route53-batch-proxy
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: AWS_REGION
+              value: "{{ aws_region | default('us-east-1') }}"
+            - name: REDIS_URL
+              value: "redis://redis:6379"
+            - name: FLUSH_INTERVAL_SECONDS
+              value: "{{ flush_interval | default('2') }}"
+            - name: MAX_BATCH_SIZE
+              value: "{{ max_batch_size | default('1000') }}"
+            - name: LOG_LEVEL
+              value: "{{ log_level | default('INFO') }}"
+            - name: PORT
+              value: "8443"
+            - name: WORKERS
+              value: "{{ workers | default('1') }}"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8443
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8443
+            initialDelaySeconds: 10
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: route53-batch-proxy
+  labels:
+    app: route53-batch-proxy
+    component: proxy
+spec:
+  selector:
+    component: proxy
+  ports:
+    - port: 8443
+      targetPort: 8443
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: route53-batch-proxy
+  labels:
+    app: route53-batch-proxy
+spec:
+  host: "{{ proxy_host }}"
+  to:
+    kind: Service
+    name: route53-batch-proxy
+  port:
+    targetPort: 8443
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

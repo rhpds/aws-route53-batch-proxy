@@ -1,0 +1,26 @@
+# Development environment variables
+# Copy this file to dev.yml and fill in your values.
+# dev.yml is gitignored and will not be committed.
+
+env: dev
+target_namespace: route53-batch-proxy-dev
+kubeconfig: ~/secrets/ocpv-infra01.dal12.infra.demo.redhat.com.kubeconfig
+cluster_domain: apps.ocpv-infra01.dal12.infra.demo.redhat.com
+proxy_host: "route53-proxy-dev.{{ cluster_domain }}"
+git_repo_url: https://github.com/rhpds/aws-route53-batch-proxy.git
+git_ref: main
+
+# AWS credentials for Route53 access
+aws_access_key_id: YOUR_AWS_ACCESS_KEY_ID
+aws_secret_access_key: YOUR_AWS_SECRET_ACCESS_KEY
+aws_region: us-east-1
+
+# Webhook secret for GitHub → BuildConfig trigger
+webhook_secret: CHANGE_ME
+
+# Optional tuning
+# proxy_replicas: 1
+# flush_interval: 2
+# max_batch_size: 1000
+# log_level: INFO
+# workers: 1

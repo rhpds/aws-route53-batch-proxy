@@ -5,5 +5,5 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-playbooks/vars/dev.yml
-playbooks/vars/prod.yml
+ansible/vars/dev.yml
+ansible/vars/prod.yml

@@ -1,0 +1,33 @@
+---
+- name: Render manifests template
+  ansible.builtin.template:
+    src: manifests.yaml.j2
+    dest: "/tmp/r53proxy-manifests-{{ target_namespace }}.yaml"
+    mode: "0600"
+  changed_when: false
+
+- name: Read rendered manifests
+  ansible.builtin.slurp:
+    src: "/tmp/r53proxy-manifests-{{ target_namespace }}.yaml"
+  register: rendered_manifests
+
+- name: Apply manifests
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig }}"
+    namespace: "{{ target_namespace }}"
+    state: present
+    resource_definition: "{{ rendered_manifests.content | b64decode }}"
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+  register: apply_result
+
+- name: Clean up rendered manifests
+  ansible.builtin.file:
+    path: "/tmp/r53proxy-manifests-{{ target_namespace }}.yaml"
+    state: absent
+  changed_when: false
+
+- name: Report apply result
+  ansible.builtin.debug:
+    msg: "Manifests applied to {{ target_namespace }}"
