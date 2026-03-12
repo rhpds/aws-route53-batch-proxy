@@ -1,7 +1,7 @@
 """Integration tests — full HTTP request flow."""
 
 import re
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import fakeredis.aioredis
 import pytest
@@ -126,13 +126,25 @@ class TestAuth:
 
 
 class TestPassthrough:
-    def test_unknown_operation_returns_501(self, client):
-        resp = client.get("/2013-04-01/hostedzone/Z123", headers={"Authorization": AUTH_HEADER})
-        assert resp.status_code == 501
+    @patch("src.proxy.httpx.AsyncClient.request")
+    def test_passthrough_forwards_to_route53(self, mock_request, client):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.content = b"<ListHostedZonesResponse/>"
+        mock_response.headers = {"content-type": "application/xml"}
+        mock_request.return_value = mock_response
+        resp = client.get("/2013-04-01/hostedzone", headers={"Authorization": AUTH_HEADER})
+        assert resp.status_code == 200
 
-    def test_list_rrsets_returns_501(self, client):
+    @patch("src.proxy.httpx.AsyncClient.request")
+    def test_passthrough_forwards_list_rrsets(self, mock_request, client):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.content = b"<ListResourceRecordSetsResponse/>"
+        mock_response.headers = {"content-type": "application/xml"}
+        mock_request.return_value = mock_response
         resp = client.get("/2013-04-01/hostedzone/Z123/rrset", headers={"Authorization": AUTH_HEADER})
-        assert resp.status_code == 501
+        assert resp.status_code == 200
 
 
 class TestHealth:

@@ -3,6 +3,10 @@
 import logging
 import re
 
+import httpx
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
+from botocore.credentials import Credentials
 from fastapi import Request, Response
 
 from src.batcher import Batcher
@@ -10,6 +14,8 @@ from src.config import config
 from src.metrics import CHANGES_QUEUED, PASSTHROUGH_TOTAL, REQUESTS_TOTAL
 from src.route53_client import Route53Client
 from src.route53_xml import build_change_response, generate_change_id, parse_change_batch
+
+ROUTE53_HOST = "https://route53.amazonaws.com"
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +52,8 @@ class Proxy:
     def __init__(self, batcher: Batcher, r53_client: Route53Client):
         self.batcher = batcher
         self.r53_client = r53_client
+        self._http_client = httpx.AsyncClient(verify=True, timeout=30.0)
+        self._credentials = Credentials(config.AWS_ACCESS_KEY_ID, config.AWS_SECRET_ACCESS_KEY)
 
     def _check_auth(self, request: Request) -> Response | None:
         auth = request.headers.get("authorization", "")
@@ -162,15 +170,38 @@ class Proxy:
             )
 
     async def _handle_passthrough(self, request: Request) -> Response:
-        logger.warning("Unhandled Route53 operation: %s %s", request.method, request.url.path)
-        return Response(
-            content=(
-                "<ErrorResponse><Error><Code>NotImplemented</Code>"
-                "<Message>This Route53 operation is not proxied</Message></Error></ErrorResponse>"
-            ),
-            status_code=501,
-            media_type="application/xml",
-        )
+        body = await request.body()
+        url = f"{ROUTE53_HOST}{request.url.path}"
+        if request.url.query:
+            url = f"{url}?{request.url.query}"
+
+        aws_request = AWSRequest(method=request.method, url=url, data=body or None)
+        SigV4Auth(self._credentials, "route53", config.AWS_REGION).add_auth(aws_request)
+
+        headers = dict(aws_request.headers)
+        try:
+            upstream = await self._http_client.request(
+                method=request.method,
+                url=url,
+                headers=headers,
+                content=body or None,
+            )
+            logger.info("Passthrough %s %s → %d", request.method, request.url.path, upstream.status_code)
+            return Response(
+                content=upstream.content,
+                status_code=upstream.status_code,
+                media_type=upstream.headers.get("content-type", "application/xml"),
+            )
+        except Exception:
+            logger.exception("Passthrough failed: %s %s", request.method, request.url.path)
+            return Response(
+                content=(
+                    "<ErrorResponse><Error><Code>ServiceUnavailable</Code>"
+                    "<Message>Upstream Route53 request failed</Message></Error></ErrorResponse>"
+                ),
+                status_code=503,
+                media_type="application/xml",
+            )
 
     @staticmethod
     def _guess_operation(path: str, method: str) -> str:
