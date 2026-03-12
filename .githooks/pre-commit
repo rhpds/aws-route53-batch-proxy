@@ -1,0 +1,14 @@
+#!/bin/bash
+# Pre-commit hook: lint with ruff + run tests
+set -e
+
+echo "=== Running ruff check ==="
+.venv/bin/python3 -m ruff check src/ tests/
+
+echo "=== Running ruff format check ==="
+.venv/bin/python3 -m ruff format --check src/ tests/
+
+echo "=== Running tests ==="
+.venv/bin/python3 -m pytest tests/ -q
+
+echo "=== All checks passed ==="

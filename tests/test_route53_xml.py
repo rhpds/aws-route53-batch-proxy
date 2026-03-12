@@ -1,7 +1,6 @@
 """Tests for Route53 XML parsing and generation."""
 
-import pytest
-from src.route53_xml import parse_change_batch, build_change_response, build_change_batch_xml
+from src.route53_xml import build_change_batch_xml, build_change_response, parse_change_batch
 
 
 class TestParseChangeBatch:
@@ -99,8 +98,18 @@ class TestBuildChangeBatchXml:
         assert reparsed[0]["values"] == ["10.0.1.5"]
 
     def test_roundtrip_alias(self):
-        changes = [{"action": "CREATE", "name": "apps.g1.example.com.", "type": "A",
-                     "alias_target": {"hosted_zone_id": "Z1234", "dns_name": "lb.us-east-1.elb.amazonaws.com.", "evaluate_target_health": False}}]
+        changes = [
+            {
+                "action": "CREATE",
+                "name": "apps.g1.example.com.",
+                "type": "A",
+                "alias_target": {
+                    "hosted_zone_id": "Z1234",
+                    "dns_name": "lb.us-east-1.elb.amazonaws.com.",
+                    "evaluate_target_health": False,
+                },
+            }
+        ]
         xml_bytes = build_change_batch_xml(changes)
         reparsed = parse_change_batch(xml_bytes)
         assert reparsed[0]["alias_target"]["hosted_zone_id"] == "Z1234"

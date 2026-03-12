@@ -2,9 +2,11 @@
 
 import logging
 from contextlib import asynccontextmanager
+
 import redis.asyncio as aioredis
 from fastapi import FastAPI, Request, Response
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
 from src.batcher import Batcher
 from src.config import config
 from src.flusher import Flusher
@@ -42,11 +44,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Route53 Batch Proxy", lifespan=lifespan)
 
 
-@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def catch_all(request: Request) -> Response:
-    return await request.app.state.proxy.handle_request(request)
-
-
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -58,7 +55,11 @@ async def ready(request: Request):
         await request.app.state.redis.ping()
         return {"status": "ready"}
     except Exception:
-        return Response(content='{"status":"not ready","reason":"redis unavailable"}', status_code=503, media_type="application/json")
+        return Response(
+            content='{"status":"not ready","reason":"redis unavailable"}',
+            status_code=503,
+            media_type="application/json",
+        )
 
 
 @app.get("/metrics")
@@ -77,4 +78,14 @@ async def status(request: Request):
         QUEUE_DEPTH.labels(zone_id=zone_id).set(depth)
     flusher = request.app.state.flusher
     is_leader = await flusher.try_acquire_leader()
-    return {"active_zones": len(zones), "queue_depths": zone_depths, "total_pending": sum(zone_depths.values()), "is_flush_leader": is_leader}
+    return {
+        "active_zones": len(zones),
+        "queue_depths": zone_depths,
+        "total_pending": sum(zone_depths.values()),
+        "is_flush_leader": is_leader,
+    }
+
+
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def catch_all(request: Request) -> Response:
+    return await request.app.state.proxy.handle_request(request)

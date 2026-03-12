@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime, timezone
+
 from lxml import etree
 
 NS = "https://route53.amazonaws.com/doc/2013-04-01/"
@@ -92,7 +93,9 @@ def build_change_batch_xml(changes: list[dict]) -> bytes:
             alias_el = etree.SubElement(rrset_el, "AliasTarget")
             etree.SubElement(alias_el, "HostedZoneId").text = alias["hosted_zone_id"]
             etree.SubElement(alias_el, "DNSName").text = alias["dns_name"]
-            etree.SubElement(alias_el, "EvaluateTargetHealth").text = str(alias.get("evaluate_target_health", False)).lower()
+            etree.SubElement(alias_el, "EvaluateTargetHealth").text = str(
+                alias.get("evaluate_target_health", False)
+            ).lower()
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8")
 
 

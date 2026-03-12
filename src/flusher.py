@@ -3,7 +3,9 @@
 import asyncio
 import logging
 import time
+
 from botocore.exceptions import ClientError
+
 from src.batcher import Batcher
 from src.config import config
 from src.metrics import CHANGES_FLUSHED, FLUSH_BATCH_SIZE, FLUSH_DURATION, FLUSH_ERRORS, QUEUE_DEPTH
@@ -45,8 +47,8 @@ class Flusher:
         clean = [{k: v for k, v in c.items() if not k.startswith("_")} for c in deduped]
 
         for i in range(0, len(clean), config.MAX_BATCH_SIZE):
-            batch = clean[i:i + config.MAX_BATCH_SIZE]
-            batch_changes = deduped[i:i + config.MAX_BATCH_SIZE]
+            batch = clean[i : i + config.MAX_BATCH_SIZE]
+            batch_changes = deduped[i : i + config.MAX_BATCH_SIZE]
             FLUSH_BATCH_SIZE.observe(len(batch))
             start = time.monotonic()
             try:
@@ -59,7 +61,9 @@ class Flusher:
                 for cid in change_ids:
                     await self.batcher.map_change_id(cid, real_id)
                 await self.batcher.reset_fail_count(zone_id)
-                logger.info("Flushed %d changes for zone %s in %.2fs (real_id=%s)", len(batch), zone_id, duration, real_id)
+                logger.info(
+                    "Flushed %d changes for zone %s in %.2fs (real_id=%s)", len(batch), zone_id, duration, real_id
+                )
             except ClientError as e:
                 duration = time.monotonic() - start
                 FLUSH_DURATION.observe(duration)
@@ -68,7 +72,12 @@ class Flusher:
                 logger.error("Flush failed for zone %s (attempt %d): %s", zone_id, fail_count, e)
                 await self.batcher.requeue(zone_id, batch_changes)
                 if fail_count >= config.MAX_FLUSH_FAILURES:
-                    logger.error("Zone %s hit %d consecutive failures, backing off %ds", zone_id, fail_count, config.FLUSH_BACKOFF_SECONDS)
+                    logger.error(
+                        "Zone %s hit %d consecutive failures, backing off %ds",
+                        zone_id,
+                        fail_count,
+                        config.FLUSH_BACKOFF_SECONDS,
+                    )
                     await self.batcher.set_backoff(zone_id, config.FLUSH_BACKOFF_SECONDS)
                     await self.batcher.reset_fail_count(zone_id)
                 break

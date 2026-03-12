@@ -1,9 +1,8 @@
 """Tests for change queue and dedup logic."""
 
-import json
+import fakeredis.aioredis
 import pytest
 import pytest_asyncio
-import fakeredis.aioredis
 
 from src.batcher import Batcher
 
@@ -48,8 +47,12 @@ class TestEnqueue:
         assert len(second) == 0
 
     async def test_multiple_zones_independent(self, batcher):
-        await batcher.enqueue("Z1", [{"action": "DELETE", "name": "a.example.com.", "type": "A", "values": ["1.1.1.1"]}], "B1")
-        await batcher.enqueue("Z2", [{"action": "DELETE", "name": "b.example.com.", "type": "A", "values": ["2.2.2.2"]}], "B2")
+        await batcher.enqueue(
+            "Z1", [{"action": "DELETE", "name": "a.example.com.", "type": "A", "values": ["1.1.1.1"]}], "B1"
+        )
+        await batcher.enqueue(
+            "Z2", [{"action": "DELETE", "name": "b.example.com.", "type": "A", "values": ["2.2.2.2"]}], "B2"
+        )
         z1 = await batcher.drain("Z1")
         z2 = await batcher.drain("Z2")
         assert len(z1) == 1 and len(z2) == 1
@@ -91,7 +94,9 @@ class TestDedup:
 @pytest.mark.asyncio
 class TestRequeue:
     async def test_requeue_on_failure(self, batcher):
-        changes = [{"action": "DELETE", "name": "a.example.com.", "type": "A", "values": ["1.1.1.1"], "_change_id": "B1"}]
+        changes = [
+            {"action": "DELETE", "name": "a.example.com.", "type": "A", "values": ["1.1.1.1"], "_change_id": "B1"}
+        ]
         await batcher.requeue("Z1", changes)
         queued = await batcher.drain("Z1")
         assert len(queued) == 1
@@ -100,8 +105,12 @@ class TestRequeue:
 @pytest.mark.asyncio
 class TestActiveZones:
     async def test_lists_zones_with_pending_changes(self, batcher):
-        await batcher.enqueue("Z1", [{"action": "DELETE", "name": "a.example.com.", "type": "A", "values": ["1.1.1.1"]}], "B1")
-        await batcher.enqueue("Z2", [{"action": "DELETE", "name": "b.example.com.", "type": "A", "values": ["2.2.2.2"]}], "B2")
+        await batcher.enqueue(
+            "Z1", [{"action": "DELETE", "name": "a.example.com.", "type": "A", "values": ["1.1.1.1"]}], "B1"
+        )
+        await batcher.enqueue(
+            "Z2", [{"action": "DELETE", "name": "b.example.com.", "type": "A", "values": ["2.2.2.2"]}], "B2"
+        )
         zones = await batcher.active_zones()
         assert set(zones) == {"Z1", "Z2"}
 
@@ -113,9 +122,13 @@ class TestActiveZones:
 @pytest.mark.asyncio
 class TestQueueDepth:
     async def test_returns_count(self, batcher):
-        await batcher.enqueue("Z1", [
-            {"action": "DELETE", "name": "a.example.com.", "type": "A", "values": ["1.1.1.1"]},
-            {"action": "DELETE", "name": "b.example.com.", "type": "A", "values": ["2.2.2.2"]},
-        ], "B1")
+        await batcher.enqueue(
+            "Z1",
+            [
+                {"action": "DELETE", "name": "a.example.com.", "type": "A", "values": ["1.1.1.1"]},
+                {"action": "DELETE", "name": "b.example.com.", "type": "A", "values": ["2.2.2.2"]},
+            ],
+            "B1",
+        )
         depth = await batcher.queue_depth("Z1")
         assert depth == 2

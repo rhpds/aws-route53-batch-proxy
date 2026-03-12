@@ -17,4 +17,5 @@ class Config:
     WORKERS: int = int(os.environ.get("WORKERS", "4"))
     LEADER_LOCK_TTL: int = int(os.environ.get("LEADER_LOCK_TTL", "10"))
 
+
 config = Config()

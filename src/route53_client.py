@@ -1,8 +1,9 @@
 """boto3 wrapper for real Route53 API calls."""
 
 import logging
+
 import boto3
-from botocore.exceptions import ClientError
+
 from src.config import config
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,8 @@ class Route53Client:
 
     def change_resource_record_sets(self, zone_id: str, change_batch: dict) -> dict:
         response = self.client.change_resource_record_sets(
-            HostedZoneId=zone_id, ChangeBatch=change_batch,
+            HostedZoneId=zone_id,
+            ChangeBatch=change_batch,
         )
         return response.get("ChangeInfo", {})
 
