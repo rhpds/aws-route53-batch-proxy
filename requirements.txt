@@ -1,0 +1,11 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+boto3>=1.35.0
+redis[hiredis]>=5.2.0
+prometheus-client>=0.21.0
+lxml>=5.3.0
+httpx>=0.28.0
+pytest>=8.3.0
+pytest-asyncio>=0.24.0
+moto[route53]>=5.0.0
+fakeredis>=2.26.0
