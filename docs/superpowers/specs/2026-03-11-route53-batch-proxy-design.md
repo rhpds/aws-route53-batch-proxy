@@ -170,9 +170,22 @@ These pods need to handle hundreds of concurrent connections from 3 AAP clusters
 - Storage: 5Gi PVC (RBD or CephFS)
 - `maxmemory-policy: allkeys-lru`
 
-### Kubernetes Resources
+### Environments & Branching
 
-- Namespace: `route53-batch-proxy` (or within existing Babylon infra namespace)
+Two environments deployed to separate namespaces on the Babylon infra cluster:
+
+| Branch | Namespace | Purpose |
+|---|---|---|
+| `main` | `route53-batch-proxy-dev` | Development — test against non-production AAP clusters |
+| `production` | `route53-batch-proxy` | Production — serves all 3 AAP production clusters |
+
+**Pushes to `main` and `production` auto-trigger OpenShift builds** via GitHub webhooks (same pattern as Parsec). The BuildConfig's `image.openshift.io/triggers` annotation auto-triggers a rollout when the new image lands in the ImageStream. Do NOT manually trigger builds with `oc start-build`.
+
+### Kubernetes Resources (per namespace)
+
+- Namespace: `route53-batch-proxy-dev` / `route53-batch-proxy`
+- BuildConfig: `route53-batch-proxy` (GitHub webhook trigger, Docker strategy)
+- ImageStream: `route53-batch-proxy`
 - Deployment: `route53-batch-proxy` (2 replicas, anti-affinity)
 - Service: `route53-batch-proxy` (ClusterIP, port 8443)
 - Deployment: `route53-batch-proxy-redis` (1 replica, persistent)
@@ -281,18 +294,40 @@ aws-route53-batch-proxy/
     test_route53_xml.py # XML parsing/generation
     test_proxy.py       # Integration tests with fake Route53
     conftest.py         # Shared fixtures
-  manifests/
-    namespace.yaml
-    deployment.yaml
-    redis.yaml
-    service.yaml
-    configmap.yaml
-    networkpolicy.yaml
-    pdb.yaml
+  playbooks/
+    deploy.yaml         # Ansible deployment playbook
+    vars/
+      common.yml        # Shared variables (committed)
+      dev.yml.example   # Dev vars template
+      prod.yml.example  # Prod vars template
+    templates/
+      manifests.yaml.j2 # All OpenShift manifests (Jinja2 template)
   Dockerfile
   requirements.txt
   README.md
 ```
+
+### Deployment
+
+Deployment is managed by an Ansible playbook (`playbooks/deploy.yaml`), same pattern as Parsec. All manifests are rendered from a single Jinja2 template (`playbooks/templates/manifests.yaml.j2`).
+
+```bash
+# Dev deploy (main branch)
+ansible-playbook playbooks/deploy.yaml -e env=dev
+
+# Prod deploy (production branch)
+ansible-playbook playbooks/deploy.yaml -e env=prod
+```
+
+The playbook creates:
+1. Namespace (`route53-batch-proxy-dev` or `route53-batch-proxy`)
+2. BuildConfig with GitHub webhook trigger (source: `main` or `production` branch)
+3. ImageStream
+4. Secrets (AWS creds, TLS)
+5. ConfigMap
+6. Redis deployment + service + PVC
+7. Proxy deployment + service
+8. NetworkPolicy + PDB
 
 ## Dependencies
 
