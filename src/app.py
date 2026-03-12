@@ -20,6 +20,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_shared_state = {}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -33,6 +35,9 @@ async def lifespan(app: FastAPI):
     app.state.batcher = batcher
     app.state.flusher = flusher
     app.state.proxy = proxy
+    _shared_state["redis"] = redis_client
+    _shared_state["batcher"] = batcher
+    _shared_state["flusher"] = flusher
     flusher.start()
     logger.info("Flush worker started")
     yield
@@ -41,18 +46,30 @@ async def lifespan(app: FastAPI):
     await redis_client.aclose()
 
 
+# --- External app (Route53 API proxy, exposed via Route) ---
+
 app = FastAPI(title="Route53 Batch Proxy", lifespan=lifespan)
 
 
-@app.get("/health")
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def catch_all(request: Request) -> Response:
+    return await request.app.state.proxy.handle_request(request)
+
+
+# --- Internal app (health, ready, metrics, status — cluster-only, no Route) ---
+
+internal_app = FastAPI(title="Route53 Batch Proxy Internal")
+
+
+@internal_app.get("/health")
 async def health():
     return {"status": "ok"}
 
 
-@app.get("/ready")
-async def ready(request: Request):
+@internal_app.get("/ready")
+async def ready():
     try:
-        await request.app.state.redis.ping()
+        await _shared_state["redis"].ping()
         return {"status": "ready"}
     except Exception:
         return Response(
@@ -62,21 +79,21 @@ async def ready(request: Request):
         )
 
 
-@app.get("/metrics")
+@internal_app.get("/metrics")
 async def metrics():
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-@app.get("/status")
-async def status(request: Request):
-    batcher = request.app.state.batcher
+@internal_app.get("/status")
+async def status():
+    batcher = _shared_state["batcher"]
+    flusher = _shared_state["flusher"]
     zones = await batcher.active_zones()
     zone_depths = {}
     for zone_id in zones:
         depth = await batcher.queue_depth(zone_id)
         zone_depths[zone_id] = depth
         QUEUE_DEPTH.labels(zone_id=zone_id).set(depth)
-    flusher = request.app.state.flusher
     is_leader = await flusher.try_acquire_leader()
     return {
         "active_zones": len(zones),
@@ -84,8 +101,3 @@ async def status(request: Request):
         "total_pending": sum(zone_depths.values()),
         "is_flush_leader": is_leader,
     }
-
-
-@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def catch_all(request: Request) -> Response:
-    return await request.app.state.proxy.handle_request(request)

@@ -130,6 +130,9 @@ spec:
           image: " "
           ports:
             - containerPort: 8443
+              name: api
+            - containerPort: 9090
+              name: internal
           env:
             - name: AWS_ACCESS_KEY_ID
               valueFrom:
@@ -165,13 +168,13 @@ spec:
           readinessProbe:
             httpGet:
               path: /ready
-              port: 8443
+              port: 9090
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /health
-              port: 8443
+              port: 9090
             initialDelaySeconds: 10
             periodSeconds: 30
 ---
@@ -188,6 +191,10 @@ spec:
   ports:
     - port: 8443
       targetPort: 8443
+      name: api
+    - port: 9090
+      targetPort: 9090
+      name: internal
 ---
 apiVersion: route.openshift.io/v1
 kind: Route

@@ -39,14 +39,6 @@ def test_app(mock_r53):
     app.state.batcher = batcher
     app.state.proxy = proxy
 
-    @app.get("/health")
-    async def health():
-        return {"status": "ok"}
-
-    @app.get("/ready")
-    async def ready():
-        return {"status": "ready"}
-
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
     async def catch_all(request: Request) -> Response:
         return await request.app.state.proxy.handle_request(request)
@@ -55,8 +47,25 @@ def test_app(mock_r53):
 
 
 @pytest.fixture
+def internal_app():
+    from src.app import _shared_state, internal_app
+
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True, connected=True)
+    _shared_state["redis"] = redis_client
+    _shared_state["batcher"] = Batcher(redis_client)
+    _shared_state["flusher"] = MagicMock()
+    _shared_state["flusher"].try_acquire_leader = AsyncMock(return_value=False)
+    return internal_app
+
+
+@pytest.fixture
 def client(test_app):
     return TestClient(test_app)
+
+
+@pytest.fixture
+def internal_client(internal_app):
+    return TestClient(internal_app)
 
 
 SAMPLE_CHANGE_XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -147,11 +156,20 @@ class TestPassthrough:
         assert resp.status_code == 200
 
 
-class TestHealth:
-    def test_health(self, client):
-        resp = client.get("/health")
+class TestInternal:
+    def test_health(self, internal_client):
+        resp = internal_client.get("/health")
         assert resp.status_code == 200
 
-    def test_ready(self, client):
-        resp = client.get("/ready")
+    def test_ready(self, internal_client):
+        resp = internal_client.get("/ready")
         assert resp.status_code == 200
+
+    def test_metrics(self, internal_client):
+        resp = internal_client.get("/metrics")
+        assert resp.status_code == 200
+
+    def test_status(self, internal_client):
+        resp = internal_client.get("/status")
+        assert resp.status_code == 200
+        assert "active_zones" in resp.json()
