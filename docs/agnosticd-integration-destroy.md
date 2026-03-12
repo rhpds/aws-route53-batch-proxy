@@ -155,15 +155,59 @@ Add `route53_endpoint_url` as a play-level var (same as v2 above):
 
 ### 2. `ansible/roles-infra/infra-dns/tasks/nested_loop.yml`
 
-Add `endpoint_url: "{{ route53_endpoint_url | default(omit) }}"` to the two
-`state: absent` `amazon.aws.route53` calls:
+Add `endpoint_url` to the two `state: absent` `amazon.aws.route53` calls.
 
-- **Line 164** — absent, main record
-- **Line 182** — absent, alt records
+**Line 164** (delete — main record):
+```yaml
+        - name: DNS entry ({{ _dns_state | default('present') }})
+          when: route53_aws_zone_id is defined
+          amazon.aws.route53:
+            state: absent
+            endpoint_url: "{{ route53_endpoint_url | default(omit) }}"
+            aws_access_key_id: "{{ route53_aws_access_key_id }}"
+            aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
+            hosted_zone_id: "{{ route53_aws_zone_id }}"
+            record: "{{ _instance_name }}.{{ base_domain }}"
+            type: A
+```
+
+**Line 182** (delete — alt records):
+```yaml
+        - name: DNS alternative entry ({{ _dns_state | default('present') }})
+          when: route53_aws_zone_id is defined and _alt_names | length > 0
+          loop: "{{ _alt_names }}"
+          loop_control:
+            loop_var: _alt_name
+          amazon.aws.route53:
+            state: absent
+            endpoint_url: "{{ route53_endpoint_url | default(omit) }}"
+            aws_access_key_id: "{{ route53_aws_access_key_id }}"
+            aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
+            hosted_zone_id: "{{ route53_aws_zone_id }}"
+            record: "{{ _alt_name }}{{_index}}.{{ base_domain }}"
+            type: A
+```
 
 ### 3. `ansible/roles/host-ocp4-assisted-destroy/tasks/main.yaml`
 
-Add `endpoint_url` to the route53 call at **line 52**.
+Add `endpoint_url` to the route53 call at **line 52**:
+
+```yaml
+    - name: Delete dns records
+      when: route53_aws_zone_id is defined
+      amazon.aws.route53:
+        state: absent
+        endpoint_url: "{{ route53_endpoint_url | default(omit) }}"
+        aws_access_key_id: "{{ route53_aws_access_key_id }}"
+        aws_secret_access_key: "{{ route53_aws_secret_access_key }}"
+        hosted_zone_id: "{{ route53_aws_zone_id }}"
+        record: "{{ item }}.{{ cluster_name }}.{{ cluster_dns_zone }}"
+        zone: "{{ cluster_dns_zone  }}"
+        type: A
+      loop:
+        - "api"
+        - "*.apps"
+```
 
 ---
 
@@ -214,13 +258,12 @@ falling back to direct AWS Route53 calls.
 
 ## Verification
 
-1. Pick a dev catalog item (e.g. `agd-v2.ocp-cluster-cnv-pools` in `dev` stage).
-2. Bump its `scm_ref` to the agnosticd branch with the changes.
-3. Trigger a destroy.
-4. Check the proxy logs and metrics:
+1. Merge the agnosticd PR.
+2. Trigger a destroy on a dev-stage CNV catalog item (e.g. `agd-v2.ocp-cluster-cnv-pools`).
+3. Check the proxy logs and metrics:
    ```
    KUBECONFIG=~/secrets/ocpv-infra01.dal12.infra.demo.redhat.com.kubeconfig \
      oc logs -n route53-batch-proxy-dev -l app=route53-batch-proxy -f
    ```
-5. Confirm DNS records are deleted and the proxy shows batched flushes.
-6. After validation, merge the agnosticd PR and bump all prod catalog items.
+4. Confirm DNS records are deleted and the proxy shows batched flushes.
+5. After validation, bump `scm_ref` on the prod catalog items listed above.
