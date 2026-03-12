@@ -1,0 +1,231 @@
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: {{ app_name }}
+  namespace: {{ namespace }}
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: {{ app_name }}
+  namespace: {{ namespace }}
+spec:
+  source:
+    type: Git
+    git:
+      uri: {{ github_repo }}
+      ref: {{ git_ref }}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+  output:
+    to:
+      kind: ImageStreamTag
+      name: {{ app_name }}:latest
+  triggers:
+  - type: GitHub
+    github:
+      secretReference:
+        name: {{ app_name }}-webhook-secret
+  - type: ConfigChange
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ app_name }}-config
+  namespace: {{ namespace }}
+data:
+  FLUSH_INTERVAL_SECONDS: "{{ flush_interval_seconds }}"
+  MAX_BATCH_SIZE: "{{ max_batch_size }}"
+  FLUSH_BACKOFF_SECONDS: "{{ flush_backoff_seconds }}"
+  LOG_LEVEL: "{{ log_level }}"
+  REDIS_URL: "redis://{{ redis_name }}:6379"
+  PORT: "{{ proxy_port }}"
+  WORKERS: "{{ proxy_workers }}"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ app_name }}
+  namespace: {{ namespace }}
+  annotations:
+    image.openshift.io/triggers: >-
+      [{"from":{"kind":"ImageStreamTag","name":"{{ app_name }}:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"{{ app_name }}\")].image"}]
+spec:
+  replicas: {{ proxy_replicas }}
+  selector:
+    matchLabels:
+      app: {{ app_name }}
+  template:
+    metadata:
+      labels:
+        app: {{ app_name }}
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - {{ app_name }}
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: {{ app_name }}
+        image: {{ app_name }}:latest
+        ports:
+        - containerPort: {{ proxy_port }}
+          protocol: TCP
+        envFrom:
+        - configMapRef:
+            name: {{ app_name }}-config
+        - secretRef:
+            name: {{ app_name }}-aws-creds
+        resources:
+          requests:
+            cpu: "{{ proxy_cpu_request }}"
+            memory: "{{ proxy_memory_request }}"
+          limits:
+            cpu: "{{ proxy_cpu_limit }}"
+            memory: "{{ proxy_memory_limit }}"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ proxy_port }}
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: {{ proxy_port }}
+          initialDelaySeconds: 5
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ app_name }}
+  namespace: {{ namespace }}
+spec:
+  selector:
+    app: {{ app_name }}
+  ports:
+  - port: {{ proxy_port }}
+    targetPort: {{ proxy_port }}
+    protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ redis_name }}
+  namespace: {{ namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ redis_name }}
+  template:
+    metadata:
+      labels:
+        app: {{ redis_name }}
+    spec:
+      containers:
+      - name: redis
+        image: registry.redhat.io/rhel9/redis-7:latest
+        ports:
+        - containerPort: 6379
+          protocol: TCP
+        args:
+        - --maxmemory
+        - "1gb"
+        - --maxmemory-policy
+        - allkeys-lru
+        - --save
+        - ""
+        - --appendonly
+        - "yes"
+        resources:
+          requests:
+            cpu: "{{ redis_cpu_request }}"
+            memory: "{{ redis_memory_request }}"
+          limits:
+            cpu: "{{ redis_cpu_limit }}"
+            memory: "{{ redis_memory_limit }}"
+        volumeMounts:
+        - name: redis-data
+          mountPath: /var/lib/redis/data
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: redis-data
+        persistentVolumeClaim:
+          claimName: {{ redis_name }}-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ redis_name }}-data
+  namespace: {{ namespace }}
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ redis_storage }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ redis_name }}
+  namespace: {{ namespace }}
+spec:
+  selector:
+    app: {{ redis_name }}
+  ports:
+  - port: 6379
+    targetPort: 6379
+    protocol: TCP
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ app_name }}
+  namespace: {{ namespace }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: {{ app_name }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ app_name }}-allow-aap
+  namespace: {{ namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app: {{ app_name }}
+  policyTypes:
+  - Ingress
+  ingress:
+  - ports:
+    - port: {{ proxy_port }}
+      protocol: TCP

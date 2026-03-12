@@ -1,0 +1,7 @@
+---
+env: prod
+namespace: route53-batch-proxy
+git_ref: production
+aws_access_key_id: "AKIA..."
+aws_secret_access_key: "..."
+kubeconfig: "~/secrets/parsec-ocpv-infra01.dal12.infra.demo.redhat.com.kubeconfig"

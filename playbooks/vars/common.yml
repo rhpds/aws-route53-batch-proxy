@@ -1,0 +1,25 @@
+---
+app_name: route53-batch-proxy
+image_name: route53-batch-proxy
+redis_name: route53-batch-proxy-redis
+
+proxy_replicas: 2
+proxy_cpu_request: "2"
+proxy_cpu_limit: "4"
+proxy_memory_request: "2Gi"
+proxy_memory_limit: "4Gi"
+proxy_workers: 4
+proxy_port: 8443
+
+redis_cpu_request: "1"
+redis_cpu_limit: "2"
+redis_memory_request: "2Gi"
+redis_memory_limit: "4Gi"
+redis_storage: "5Gi"
+
+flush_interval_seconds: "2"
+max_batch_size: "1000"
+flush_backoff_seconds: "30"
+log_level: "INFO"
+
+github_repo: "https://github.com/rhpds/aws-route53-batch-proxy.git"

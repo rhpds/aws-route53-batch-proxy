@@ -1,0 +1,57 @@
+---
+- name: Deploy Route53 Batch Proxy
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+  - vars/common.yml
+  - "vars/{{ env }}.yml"
+
+  tasks:
+  - name: Create namespace
+    kubernetes.core.k8s:
+      kubeconfig: "{{ kubeconfig }}"
+      state: present
+      definition:
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: "{{ namespace }}"
+
+  - name: Create AWS credentials secret
+    kubernetes.core.k8s:
+      kubeconfig: "{{ kubeconfig }}"
+      state: present
+      definition:
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: "{{ app_name }}-aws-creds"
+          namespace: "{{ namespace }}"
+        type: Opaque
+        stringData:
+          AWS_ACCESS_KEY_ID: "{{ aws_access_key_id }}"
+          AWS_SECRET_ACCESS_KEY: "{{ aws_secret_access_key }}"
+    tags: [secrets]
+
+  - name: Create webhook secret
+    kubernetes.core.k8s:
+      kubeconfig: "{{ kubeconfig }}"
+      state: present
+      definition:
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: "{{ app_name }}-webhook-secret"
+          namespace: "{{ namespace }}"
+        type: Opaque
+        stringData:
+          WebHookSecretKey: "{{ webhook_secret | default(lookup('password', '/dev/null length=32 chars=hexdigits')) }}"
+    tags: [secrets]
+
+  - name: Apply manifests
+    kubernetes.core.k8s:
+      kubeconfig: "{{ kubeconfig }}"
+      state: present
+      definition: "{{ lookup('template', 'templates/manifests.yaml.j2') | from_yaml_all }}"
+    tags: [apply]
