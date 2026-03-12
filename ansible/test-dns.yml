@@ -1,0 +1,232 @@
+---
+# Test playbook for Route53 Batch Proxy
+#
+# Mirrors the AgnosticD pattern for creating and deleting Route53 records,
+# but sends requests through the batch proxy instead of directly to AWS.
+#
+# Usage:
+#   # Create records
+#   ansible-playbook ansible/test-dns.yml -e env=dev -e dns_state=present \
+#     -e guid=abc12 -e hosted_zone_id=Z1234567890
+#
+#   # Delete records
+#   ansible-playbook ansible/test-dns.yml -e env=dev -e dns_state=absent \
+#     -e guid=abc12 -e hosted_zone_id=Z1234567890
+#
+#   # Bulk create from instances list
+#   ansible-playbook ansible/test-dns.yml -e env=dev -e dns_state=present \
+#     -e guid=abc12 -e hosted_zone_id=Z1234567890 \
+#     -e '{"instances":[{"name":"bastion","ip":"10.0.1.5"},{"name":"master","ip":"10.0.1.10"}]}'
+#
+#   # Clean entire zone (delete all non-NS/SOA records)
+#   ansible-playbook ansible/test-dns.yml -e env=dev --tags clean-zone \
+#     -e hosted_zone_id=Z1234567890
+
+- name: Route53 Batch Proxy DNS Test
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - "vars/{{ env }}.yml"
+
+  vars:
+    proxy_url: "https://{{ proxy_host }}"
+    base_domain: "dynamic.redhatworkshops.io"
+    dns_state: present
+    dns_ttl: 300
+    guid: ""
+    hosted_zone_id: ""
+    aws_auth_header: "AWS4-HMAC-SHA256 Credential={{ aws_access_key_id }}/20260101/{{ aws_region | default('us-east-1') }}/route53/aws4_request, SignedHeaders=host, Signature=proxy"
+    # Default test instances — override with -e instances='[...]'
+    instances:
+      - name: bastion
+        ip: 10.0.1.5
+      - name: master
+        ip: 10.0.1.10
+      - name: worker1
+        ip: 10.0.1.11
+    # Additional CNAME records (e.g. *.apps → master)
+    cname_records:
+      - name: "*.apps"
+        target: "master"
+
+  pre_tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - guid | length > 0
+          - hosted_zone_id | length > 0
+        fail_msg: "guid and hosted_zone_id are required"
+
+  tasks:
+    # --- Individual record creation (AgnosticD infra-dns pattern) ---
+    - name: "DNS A records ({{ dns_state }})"
+      ansible.builtin.uri:
+        url: "{{ proxy_url }}/2013-04-01/hostedzone/{{ hosted_zone_id }}/rrset/"
+        method: POST
+        headers:
+          Content-Type: application/xml
+          Authorization: "{{ aws_auth_header }}"
+        body: |
+          <?xml version="1.0" encoding="UTF-8"?>
+          <ChangeResourceRecordSetsRequest xmlns="https://route53.amazonaws.com/doc/2013-04-01/">
+            <ChangeBatch>
+              <Changes>
+                <Change>
+                  <Action>{{ (dns_state == 'present') | ternary('UPSERT', 'DELETE') }}</Action>
+                  <ResourceRecordSet>
+                    <Name>{{ item.name }}.{{ guid }}.{{ base_domain }}.</Name>
+                    <Type>A</Type>
+                    <TTL>{{ dns_ttl }}</TTL>
+                    <ResourceRecords>
+                      <ResourceRecord><Value>{{ item.ip }}</Value></ResourceRecord>
+                    </ResourceRecords>
+                  </ResourceRecordSet>
+                </Change>
+              </Changes>
+            </ChangeBatch>
+          </ChangeResourceRecordSetsRequest>
+        status_code: 200
+        validate_certs: false
+      loop: "{{ instances }}"
+      loop_control:
+        label: "{{ item.name }}.{{ guid }}.{{ base_domain }}"
+      register: dns_a_results
+      retries: 3
+      delay: 5
+      until: dns_a_results is succeeded
+      tags: [dns, a-records]
+
+    - name: "DNS CNAME records ({{ dns_state }})"
+      ansible.builtin.uri:
+        url: "{{ proxy_url }}/2013-04-01/hostedzone/{{ hosted_zone_id }}/rrset/"
+        method: POST
+        headers:
+          Content-Type: application/xml
+          Authorization: "{{ aws_auth_header }}"
+        body: |
+          <?xml version="1.0" encoding="UTF-8"?>
+          <ChangeResourceRecordSetsRequest xmlns="https://route53.amazonaws.com/doc/2013-04-01/">
+            <ChangeBatch>
+              <Changes>
+                <Change>
+                  <Action>{{ (dns_state == 'present') | ternary('UPSERT', 'DELETE') }}</Action>
+                  <ResourceRecordSet>
+                    <Name>{{ item.name }}.{{ guid }}.{{ base_domain }}.</Name>
+                    <Type>CNAME</Type>
+                    <TTL>{{ dns_ttl }}</TTL>
+                    <ResourceRecords>
+                      <ResourceRecord><Value>{{ item.target }}.{{ guid }}.{{ base_domain }}.</Value></ResourceRecord>
+                    </ResourceRecords>
+                  </ResourceRecordSet>
+                </Change>
+              </Changes>
+            </ChangeBatch>
+          </ChangeResourceRecordSetsRequest>
+        status_code: 200
+        validate_certs: false
+      loop: "{{ cname_records }}"
+      loop_control:
+        label: "{{ item.name }}.{{ guid }}.{{ base_domain }}"
+      register: dns_cname_results
+      retries: 3
+      delay: 5
+      until: dns_cname_results is succeeded
+      when: cname_records | length > 0
+      tags: [dns, cname-records]
+
+    # --- Batch create/delete (AgnosticD clean_zone pattern) ---
+    - name: "Batch DNS records ({{ dns_state }})"
+      ansible.builtin.uri:
+        url: "{{ proxy_url }}/2013-04-01/hostedzone/{{ hosted_zone_id }}/rrset/"
+        method: POST
+        headers:
+          Content-Type: application/xml
+          Authorization: "{{ aws_auth_header }}"
+        body: |
+          <?xml version="1.0" encoding="UTF-8"?>
+          <ChangeResourceRecordSetsRequest xmlns="https://route53.amazonaws.com/doc/2013-04-01/">
+            <ChangeBatch>
+              <Changes>
+          {% for instance in instances %}
+                <Change>
+                  <Action>{{ (dns_state == 'present') | ternary('UPSERT', 'DELETE') }}</Action>
+                  <ResourceRecordSet>
+                    <Name>{{ instance.name }}.{{ guid }}.{{ base_domain }}.</Name>
+                    <Type>A</Type>
+                    <TTL>{{ dns_ttl }}</TTL>
+                    <ResourceRecords>
+                      <ResourceRecord><Value>{{ instance.ip }}</Value></ResourceRecord>
+                    </ResourceRecords>
+                  </ResourceRecordSet>
+                </Change>
+          {% endfor %}
+          {% for cname in cname_records %}
+                <Change>
+                  <Action>{{ (dns_state == 'present') | ternary('UPSERT', 'DELETE') }}</Action>
+                  <ResourceRecordSet>
+                    <Name>{{ cname.name }}.{{ guid }}.{{ base_domain }}.</Name>
+                    <Type>CNAME</Type>
+                    <TTL>{{ dns_ttl }}</TTL>
+                    <ResourceRecords>
+                      <ResourceRecord><Value>{{ cname.target }}.{{ guid }}.{{ base_domain }}.</Value></ResourceRecord>
+                    </ResourceRecords>
+                  </ResourceRecordSet>
+                </Change>
+          {% endfor %}
+              </Changes>
+            </ChangeBatch>
+          </ChangeResourceRecordSetsRequest>
+        status_code: 200
+        validate_certs: false
+        return_content: true
+      register: batch_result
+      retries: 3
+      delay: 5
+      until: batch_result is succeeded
+      tags: [batch]
+
+    # --- Check change status ---
+    - name: Extract change ID from batch result
+      ansible.builtin.set_fact:
+        batch_change_id: "{{ batch_result.content | default('') | regex_search('BATCH-[a-f0-9]+') | default('') }}"
+      when: batch_result is defined
+      tags: [batch]
+
+    - name: Check change status
+      ansible.builtin.uri:
+        url: "{{ proxy_url }}/2013-04-01/change/{{ batch_change_id }}"
+        method: GET
+        headers:
+          Authorization: "{{ aws_auth_header }}"
+        validate_certs: false
+      register: change_status
+      when: batch_change_id | default('') | length > 0
+      tags: [batch]
+
+    - name: Report results
+      ansible.builtin.debug:
+        msg: |
+          === DNS {{ dns_state | upper }} complete ===
+          Zone:       {{ hosted_zone_id }}
+          GUID:       {{ guid }}
+          Domain:     {{ guid }}.{{ base_domain }}
+          Records:    {{ instances | length }} A + {{ cname_records | length }} CNAME
+          Change ID:  {{ batch_change_id | default('n/a') }}
+          Proxy:      {{ proxy_url }}
+      tags: [always]
+
+    # --- Clean zone: delete all non-NS/SOA records ---
+    - name: Get proxy status
+      ansible.builtin.uri:
+        url: "{{ proxy_url }}/status"
+        method: GET
+        validate_certs: false
+      register: proxy_status
+      tags: [clean-zone, never]
+
+    - name: Report proxy queue status
+      ansible.builtin.debug:
+        msg: "Proxy status: {{ proxy_status.json }}"
+      tags: [clean-zone, never]
